@@ -381,23 +381,8 @@ func listenForSlaps(ctx context.Context, pack *soundPack, accelRing *shm.RingBuf
 	var lastEventTime time.Time
 	var lastYell time.Time
 
-	var currentBrightness float64 = 0
-	var mu sync.Mutex
-	go func() {
-		ticker := time.NewTicker(30 * time.Millisecond)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			mu.Lock()
-			currentBrightness *= 0.7 // decay
-			if currentBrightness < 0.01 {
-				currentBrightness = 0
-			}
-			b := currentBrightness
-			mu.Unlock()
-			exec.Command("mac-brightnessctl", fmt.Sprintf("%.2f", b)).Run()
-		}
-	}()
+	var lightTimer *time.Timer
+	var lightMu sync.Mutex
 
 	// Start stdin command reader if in JSON mode
 	if stdioMode {
@@ -448,7 +433,6 @@ func listenForSlaps(ctx context.Context, pack *soundPack, accelRing *shm.RingBuf
 			tSample := tNow - float64(nSamples-idx-1)/float64(det.FS)
 			det.Process(sample.X, sample.Y, sample.Z, tSample)
 		}
-		fmt.Println(currentBrightness)
 
 		if len(det.Events) == 0 {
 			continue
@@ -471,9 +455,21 @@ func listenForSlaps(ctx context.Context, pack *soundPack, accelRing *shm.RingBuf
 		num, score := tracker.record(now)
 		file := tracker.getFile(score)
 
-		mu.Lock()
-		currentBrightness = 1.0
-		mu.Unlock()
+
+		lightMu.Lock()
+		exec.Command("mac-brightnessctl", "1.0").Run()
+		var timer *time.Timer
+		timer = time.AfterFunc(120*time.Millisecond, func() {
+			lightMu.Lock()
+			isLatest := lightTimer == timer
+			lightMu.Unlock()
+
+			if isLatest {
+				exec.Command("mac-brightnessctl", "0.0").Run()
+			}
+		})
+		lightTimer = timer
+		lightMu.Unlock()
 
 		if stdioMode {
 			event := map[string]interface{}{
